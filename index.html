@@ -1,0 +1,283 @@
+<!-- ... existing code ... -->
+      <div class="modal-sec">Optional: Direct Browser OAuth (Top-Level HTTPS Hosting Only)</div>
+      <p class="modal-note" style="color:#fcd34d;">
+        <strong>Why Google Sites Embed gives Error 400:</strong> Google Sites places Embed Code inside a sandboxed <code>googleusercontent.com</code> iframe, which Google OAuth blocks with <code>Error 400: invalid_request</code>. Direct OAuth sign-in only works if you host this file on a top-level HTTPS origin (like <strong>Firebase Hosting <code>*.web.app</code></strong> or <strong>GitHub Pages <code>*.github.io</code></strong>) with a <strong>Web Application</strong> OAuth Client ID.
+      </p>
+      <div id="detectedOriginBox" style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:7px 10px;border-radius:9px;background:rgba(4,11,20,0.85);border:1px solid rgba(56,189,248,0.28);font-size:0.74rem;">
+        <span style="color:var(--text-muted);">Your Origin: <code id="detectedOriginText" style="color:var(--cyan-bright);">detecting...</code></span>
+        <button id="copyOriginBtn" class="mini-btn" type="button">Copy Origin</button>
+      </div>
+      <div class="field">
+        <label for="googleScopePresetSelect">OAuth Permission Level</label>
+<!-- ... existing code ... -->
+    /* =========================================================================
+       6. CHROMEBOOK GOOGLE WORKSPACE & LOCAL STUDENT PLANNER
+       ========================================================================= */
+    function getGoogleClientId() {
+      return (localStorage.getItem("jarvis_google_client_id") || SCHOOL_CONFIG.webClientId || "").trim();
+    }
+
+    function getAppsScriptBridgeUrl() {
+      return (localStorage.getItem("jarvis_apps_script_bridge") || SCHOOL_CONFIG.schoolAppsScriptBridgeUrl || "").trim();
+    }
+
+    function isEmbeddedInGoogleSites() {
+      try {
+        if (window.self !== window.top) return true;
+      } catch (_) {
+        return true;
+      }
+      return /googleusercontent\.com|sites\.google\.com/i.test(window.location.hostname || "");
+    }
+
+    function syncGoogleHeaderBadge() {
+      const email = localStorage.getItem("jarvis_google_email") || "";
+      if (googleAccessToken && email) {
+        voiceGoogleBtn.textContent = `Google: ${email.split("@")[0]}`;
+        voiceGoogleBtn.classList.add("google-ok");
+        disconnectGoogleBtn.style.display = "inline-block";
+      } else {
+        voiceGoogleBtn.textContent = "Voice & Google";
+        voiceGoogleBtn.classList.remove("google-ok");
+        disconnectGoogleBtn.style.display = "none";
+      }
+    }
+
+    async function googleApiFetch(url, options = {}) {
+      if (!googleAccessToken) return { ok: false, status: 401, error: "Not signed in" };
+      try {
+        const headers = Object.assign({}, options.headers || {}, {
+          Authorization: `Bearer ${googleAccessToken}`
+        });
+        const resp = await fetch(url, Object.assign({}, options, { headers }));
+        if (resp.status === 401) {
+          googleAccessToken = "";
+          syncGoogleHeaderBadge();
+          return { ok: false, status: 401, error: "Google session expired — click Voice & Google to sign in again." };
+        }
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) {
+          return { ok: false, status: resp.status, error: (data.error && data.error.message) || `HTTP ${resp.status}` };
+        }
+        return { ok: true, data };
+      } catch (err) {
+        return { ok: false, status: 0, error: err.message };
+      }
+    }
+
+    async function callAppsScriptBridge(action, query = "") {
+// ... existing code ...
+      const title = cleaned.replace(/^["']|["']$/g, "").trim() || "Study Session";
+      const end = new Date(start.getTime() + 3600000);
+      const toGCalStamp = (d) => d.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
+      const gcalUrl = `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${encodeURIComponent(title)}&dates=${toGCalStamp(start)}/${toGCalStamp(end)}&details=${encodeURIComponent("Scheduled via J.A.R.V.I.S. Chromebook Edition")}`;
+      const whenLabel = start.toLocaleString([], { weekday: "short", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+      return { title, whenLabel, gcalUrl, startIso: start.toISOString(), endIso: end.toISOString() };
+    }
+
+    async function handleGoogleWorkspaceCommand(text) {
+      const low = String(text || "").toLowerCase();
+
+      // 1. Add event to Calendar / Planner (Live Google Calendar API when signed in)
+      if (/\b(add|schedule|create|put)\b.*\b(calendar|event|reminder)\b/i.test(low) || /\b(calendar|schedule)\b.*\b(tomorrow|today|at\s+\d)\b/i.test(low)) {
+        const ev = parseNaturalEventDetails(text);
+        localPlannerEvents.unshift({ title: ev.title, when: ev.whenLabel, url: ev.gcalUrl });
+        saveLocalPlannerEvents();
+
+        if (googleAccessToken) {
+          const apiRes = await googleApiFetch("https://www.googleapis.com/calendar/v3/calendars/primary/events", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              summary: ev.title,
+              description: "Scheduled via J.A.R.V.I.S. Chromebook Edition",
+              start: { dateTime: ev.startIso },
+              end: { dateTime: ev.endIso }
+            })
+          });
+          if (apiRes.ok && apiRes.data) {
+            const card = createActionCard({
+              badge: "GOOGLE CALENDAR SYNCED",
+              title: ev.title,
+              meta: `Added directly to your Google Calendar for ${ev.whenLabel}`,
+              linkUrl: apiRes.data.htmlLink || ev.gcalUrl,
+              linkLabel: "View in Google Calendar ↗"
+            });
+            deliverAssistantMessage(`Done, sir—I added **${ev.title}** (${ev.whenLabel}) directly to your live Google Calendar.`, { extraNode: card });
+            return true;
+          }
+        }
+
+        const card = createActionCard({
+          badge: "SAVED TO PLANNER",
+          title: ev.title,
+          meta: `Scheduled for ${ev.whenLabel}`,
+          linkUrl: ev.gcalUrl,
+          linkLabel: "Add to Google Calendar ↗"
+        });
+        deliverAssistantMessage(
+          `I have added **${ev.title}** (${ev.whenLabel}) to your Student Planner, sir, and prepared a 1-click Google Calendar link below.`,
+          { extraNode: card }
+        );
+        return true;
+      }
+
+      // 2. Check / Show Calendar (Live Google Calendar API when signed in)
+      if (/\b(my\s+calendar|check\s+calendar|show\s+calendar|upcoming\s+events|my\s+schedule|what'?s\s+on\s+my\s+calendar)\b/i.test(low)) {
+        let liveEvents = [];
+        if (googleAccessToken) {
+          const timeMin = encodeURIComponent(new Date().toISOString());
+          const apiRes = await googleApiFetch(`https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${timeMin}&singleEvents=true&orderBy=startTime&maxResults=8`);
+          if (apiRes.ok && Array.isArray(apiRes.data.items)) {
+            liveEvents = apiRes.data.items.map((item) => {
+              const rawStart = (item.start && (item.start.dateTime || item.start.date)) || "";
+              const when = rawStart ? new Date(rawStart).toLocaleString([], { weekday: "short", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "Upcoming";
+              return { title: item.summary || "Calendar Event", when, url: item.htmlLink || "https://calendar.google.com" };
+            });
+          }
+        }
+
+        const combined = [
+          ...liveEvents,
+          ...localPlannerEvents.map((e) => ({ title: e.title, when: e.when, url: e.url || "https://calendar.google.com" })),
+          ...importedCalendarEvents.map((e) => ({ title: e.summary, when: e.when, url: e.url || "https://calendar.google.com" }))
+        ];
+
+        const listWrap = document.createElement("div");
+        listWrap.className = "gw-list";
+        if (combined.length > 0) {
+          combined.slice(0, 10).forEach((itemObj) => {
+            const row = document.createElement("div");
+            row.className = "gw-item";
+            row.innerHTML = `
+              <div class="gw-item-head">
+                <span>${escapeHtml(itemObj.title)}</span>
+                <a class="mini-btn" href="${escapeHtml(itemObj.url)}" target="_blank" rel="noopener noreferrer">Open ↗</a>
+              </div>
+              <div class="gw-item-sub">${escapeHtml(itemObj.when)}</div>
+            `;
+            listWrap.appendChild(row);
+          });
+        }
+        const actions = document.createElement("div");
+        actions.className = "gw-actions";
+        actions.innerHTML = `<a class="mini-btn done" href="https://calendar.google.com" target="_blank" rel="noopener noreferrer">Open Google Calendar ↗</a>`;
+        listWrap.appendChild(actions);
+
+        deliverAssistantMessage(
+          combined.length
+            ? `You have ${combined.length} upcoming item(s)${liveEvents.length ? " from your live Google Calendar & planner" : " in your Student Planner"}, sir:`
+            : "Your calendar is currently clear, sir. Say \"Add Biology Quiz tomorrow at 10am to my calendar\" or open Google Calendar below.",
+          { extraNode: listWrap }
+        );
+        return true;
+      }
+
+      // 3. Google Tasks (Live Google Tasks API when signed in)
+      if (/\b(google\s+tasks?|my\s+tasks?|to-?do\s+list|add\s+task)\b/i.test(low) && !/\bcanvas\b/i.test(low)) {
+        if (googleAccessToken) {
+          if (/\b(add|create)\s+task\b/i.test(low)) {
+            const taskTitle = text.replace(/^.*?\b(?:add|create)\s+task\s*:?\s*/i, "").trim() || "New Study Task";
+            const addRes = await googleApiFetch("https://tasks.googleapis.com/tasks/v1/lists/@default/tasks", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ title: taskTitle })
+            });
+            if (addRes.ok) {
+              deliverAssistantMessage(`Added **"${taskTitle}"** to your Google Tasks list, sir.`);
+              return true;
+            }
+          }
+          const listRes = await googleApiFetch("https://tasks.googleapis.com/tasks/v1/lists/@default/tasks?showCompleted=false&maxResults=10");
+          if (listRes.ok && Array.isArray(listRes.data.items)) {
+            const tasks = listRes.data.items.filter((t) => t.title);
+            if (!tasks.length) {
+              deliverAssistantMessage("Your Google Tasks list is completely clear, sir.");
+              return true;
+            }
+            const formatted = tasks.map((t, i) => `${i + 1}. **${t.title}**`).join("\n");
+            deliverAssistantMessage(`Here are your active Google Tasks, sir:\n${formatted}`);
+            return true;
+          }
+        }
+      }
+
+      // 4. Google Docs / Sheets / Slides creation
+      if (/\b(create|new|open|make)\b.*\b(google\s+)?(doc|document|sheet|spreadsheet|slide|slides|presentation)\b/i.test(low)) {
+// ... existing code ...
+      // 5. Google Drive Search / Open (Live Google Drive API when signed in)
+      if (/\b(google\s+drive|search\s+drive|find\s+in\s+drive|open\s+drive)\b/i.test(low)) {
+        const q = text.replace(/^.*?\b(?:search|find|in|open)\s+(?:google\s+)?drive\s*(?:for)?\s*/i, "").trim();
+        const driveUrl = q
+          ? `https://drive.google.com/drive/search?q=${encodeURIComponent(q)}`
+          : "https://drive.google.com/drive/my-drive";
+
+        if (googleAccessToken) {
+          const driveQuery = q
+            ? `trashed = false and name contains '${q.replace(/'/g, "\\'")}'`
+            : "trashed = false";
+          const apiRes = await googleApiFetch(`https://www.googleapis.com/drive/v3/files?pageSize=6&fields=files(id,name,webViewLink)&q=${encodeURIComponent(driveQuery)}`);
+          if (apiRes.ok && Array.isArray(apiRes.data.files) && apiRes.data.files.length > 0) {
+            const listWrap = document.createElement("div");
+            listWrap.className = "gw-list";
+            apiRes.data.files.forEach((f) => {
+              const row = document.createElement("div");
+              row.className = "gw-item";
+              row.innerHTML = `
+                <div class="gw-item-head">
+                  <span>${escapeHtml(f.name)}</span>
+                  <a class="mini-btn" href="${escapeHtml(f.webViewLink || driveUrl)}" target="_blank" rel="noopener noreferrer">Open ↗</a>
+                </div>
+              `;
+              listWrap.appendChild(row);
+            });
+            deliverAssistantMessage(
+              q ? `Found ${apiRes.data.files.length} matching file(s) in your Google Drive, sir:` : "Here are your recent Google Drive files, sir:",
+              { extraNode: listWrap }
+            );
+            return true;
+          }
+        }
+
+        const card = createActionCard({
+          badge: "GOOGLE DRIVE",
+          title: q ? `Drive Search: "${q}"` : "My Google Drive",
+          meta: "Chromebook direct Workspace search",
+          linkUrl: driveUrl,
+          linkLabel: "Open in Google Drive ↗"
+        });
+        deliverAssistantMessage(
+          q ? `Prepared a direct Google Drive search for **"${q}"**, sir.` : "Here is your direct link to **Google Drive**, sir.",
+          { extraNode: card }
+        );
+        return true;
+      }
+
+      // 6. Gmail Search / Check
+// ... existing code ...
+    voiceGoogleBtn.addEventListener("click", () => {
+      googleClientIdInput.value = getGoogleClientId();
+      appsScriptBridgeInput.value = getAppsScriptBridgeUrl();
+      const detectedOriginEl = document.getElementById("detectedOriginText");
+      if (detectedOriginEl) {
+        const origin = window.location.origin;
+        if (!origin || origin === "null" || window.location.protocol === "file:") {
+          detectedOriginEl.textContent = "Local file:// (host on GitHub Pages or Firebase for OAuth)";
+        } else if (isEmbeddedInGoogleSites()) {
+          detectedOriginEl.textContent = `${origin} (Google Sites sandbox — blocked by OAuth)`;
+        } else {
+          detectedOriginEl.textContent = origin;
+        }
+      }
+      voiceGoogleModal.classList.add("open");
+    });
+    document.getElementById("copyOriginBtn").addEventListener("click", () => {
+      const origin = window.location.origin;
+      if (origin && origin !== "null") {
+        copyTextFallback(origin);
+        googleModalNote.style.color = "#34d399";
+        googleModalNote.textContent = `Copied ${origin} — paste this into Authorized JavaScript origins in Google Cloud Console.`;
+      }
+    });
+    document.getElementById("closeVoiceGoogleBtn").addEventListener("click", () => {
+// ... existing code ...
